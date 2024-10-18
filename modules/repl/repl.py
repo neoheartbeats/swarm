@@ -1,15 +1,15 @@
 import json
 
-from swarm import Swarm
+from modules.swarm import Swarm
 
 
-def process_and_print_streaming_response(response):
+def process_and_print_streaming_response(response, agent):
     content = ""
     last_sender = ""
 
     for chunk in response:
-        if "sender" in chunk:
-            last_sender = chunk["sender"]
+        if agent:
+            last_sender = agent
 
         if "content" in chunk and chunk["content"] is not None:
             if not content and last_sender:
@@ -34,16 +34,16 @@ def process_and_print_streaming_response(response):
             return chunk["response"]
 
 
-def pretty_print_messages(messages) -> None:
+def pretty_print_messages(messages, agent) -> None:
     for message in messages:
         if message["role"] != "assistant":
             continue
 
         # print agent name in blue
-        print(f"\033[94m{message['sender']}\033[0m:", end=" ")
+        print(f"\033[94m{agent.name}({agent.model})\033[0m:", end=" ")
 
         # print response, if any
-        if message["content"]:
+        if message.get("content"):
             print(message["content"])
 
         # print tool calls in purple, if any
@@ -58,9 +58,9 @@ def pretty_print_messages(messages) -> None:
 
 
 def run_demo_loop(
-    starting_agent, context_variables=None, stream=False, debug=False
+    swarm, starting_agent, context_variables=None, stream=False, debug=False
 ) -> None:
-    client = Swarm()
+    # client = Swarm()
     print("Starting Swarm CLI 🐝")
 
     messages = []
@@ -70,7 +70,7 @@ def run_demo_loop(
         user_input = input("\033[90mUser\033[0m: ")
         messages.append({"role": "user", "content": user_input})
 
-        response = client.run(
+        response = swarm.run(
             agent=agent,
             messages=messages,
             context_variables=context_variables or {},
@@ -79,9 +79,10 @@ def run_demo_loop(
         )
 
         if stream:
-            response = process_and_print_streaming_response(response)
+            response = process_and_print_streaming_response(response, agent)
         else:
-            pretty_print_messages(response.messages)
+            agent_updated = response.agent
+            pretty_print_messages(response.messages, agent_updated)
 
         messages.extend(response.messages)
         agent = response.agent

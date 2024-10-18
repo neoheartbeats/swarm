@@ -1,0 +1,8 @@
+jupyter
+black[jupyter]
+pydantic
+ujson
+openai
+wandb
+weave
+ujson

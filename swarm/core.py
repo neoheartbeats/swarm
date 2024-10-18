@@ -2,14 +2,11 @@
 import copy
 import json
 from collections import defaultdict
-from typing import List, Callable, Union
+from typing import Callable, List, Union
 
 # Package/library imports
 from openai import OpenAI
 
-
-# Local imports
-from .util import function_to_json, debug_print, merge_chunk
 from .types import (
     Agent,
     AgentFunction,
@@ -19,6 +16,9 @@ from .types import (
     Response,
     Result,
 )
+
+# Local imports
+from .util import debug_print, function_to_json, merge_chunk
 
 __CTX_VARS_NAME__ = "context_variables"
 
@@ -94,26 +94,26 @@ class Swarm:
         debug: bool,
     ) -> Response:
         function_map = {f.__name__: f for f in functions}
-        partial_response = Response(
-            messages=[], agent=None, context_variables={})
+        partial_response = Response(messages=[], agent=None, context_variables={})
 
         for tool_call in tool_calls:
             name = tool_call.function.name
+            id = tool_call.id[-10:]  # last 10 characters of id
+            tool_call.id = id
             # handle missing tool case, skip to next tool
             if name not in function_map:
                 debug_print(debug, f"Tool {name} not found in function map.")
                 partial_response.messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "tool_name": name,
+                        "tool_call_id": id,  # TODO
+                        "name": name,
                         "content": f"Error: Tool {name} not found.",
                     }
                 )
                 continue
             args = json.loads(tool_call.function.arguments)
-            debug_print(
-                debug, f"Processing tool call: {name} with arguments {args}")
+            debug_print(debug, f"Processing tool call: {name} with arguments {args}")
 
             func = function_map[name]
             # pass context_variables to agent functions
@@ -122,11 +122,13 @@ class Swarm:
             raw_result = function_map[name](**args)
 
             result: Result = self.handle_function_result(raw_result, debug)
+            id = tool_call.id[-10:]  # last 10 characters of id
+            tool_call.id = id
             partial_response.messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "tool_name": name,
+                    "tool_call_id": id,  # TODO
+                    "name": name,
                     "content": result.value,
                 }
             )
@@ -155,7 +157,7 @@ class Swarm:
 
             message = {
                 "content": "",
-                "sender": agent.name,
+                # "sender": agent.name,
                 "role": "assistant",
                 "function_call": None,
                 "tool_calls": defaultdict(
@@ -180,16 +182,15 @@ class Swarm:
             yield {"delim": "start"}
             for chunk in completion:
                 delta = json.loads(chunk.choices[0].delta.json())
-                if delta["role"] == "assistant":
-                    delta["sender"] = active_agent.name
+                # if delta["role"] == "assistant":
+                # delta["sender"] = active_agent.name
                 yield delta
                 delta.pop("role", None)
-                delta.pop("sender", None)
+                # delta.pop("sender", None)
                 merge_chunk(message, delta)
             yield {"delim": "end"}
 
-            message["tool_calls"] = list(
-                message.get("tool_calls", {}).values())
+            message["tool_calls"] = list(message.get("tool_calls", {}).values())
             if not message["tool_calls"]:
                 message["tool_calls"] = None
             debug_print(debug, "Received completion:", message)
@@ -207,13 +208,20 @@ class Swarm:
                     name=tool_call["function"]["name"],
                 )
                 tool_call_object = ChatCompletionMessageToolCall(
-                    id=tool_call["id"], function=function, type=tool_call["type"]
+                    id=tool_call["id"][-10:],
+                    function=function,
+                    type=tool_call["type"],  # TODO
                 )
+                # TODO
                 tool_calls.append(tool_call_object)
 
             # handle function calls, updating context_variables, and switching agents
-            partial_response = self.handle_tool_calls(
-                tool_calls, active_agent.functions, context_variables, debug
+            partial_response = (
+                self.handle_tool_calls(
+                    tool_calls, active_agent.functions, context_variables, debug
+                )
+                if tool_calls
+                else Response()
             )
             history.extend(partial_response.messages)
             context_variables.update(partial_response.context_variables)
@@ -267,11 +275,22 @@ class Swarm:
             )
             message = completion.choices[0].message
             debug_print(debug, "Received completion:", message)
-            message.sender = active_agent.name
+            message_dict = json.loads(message.model_dump_json())
             history.append(
-                json.loads(message.model_dump_json())
+                # json.loads(message.model_dump_json())
+                {
+                    "role": message.role,
+                    # "content": message.content if message.content else "",
+                    # "sender": message.sender,
+                }
             )  # to avoid OpenAI types (?)
-
+            if message.content:
+                history[-1]["content"] = message.content
+            if message.tool_calls:
+                history[-1]["tool_calls"] = message_dict["tool_calls"]
+                history[-1]["tool_calls"][0]["id"] = message_dict["tool_calls"][0][
+                    "id"
+                ][-10:]
             if not message.tool_calls or not execute_tools:
                 debug_print(debug, "Ending turn.")
                 break
@@ -284,6 +303,7 @@ class Swarm:
             context_variables.update(partial_response.context_variables)
             if partial_response.agent:
                 active_agent = partial_response.agent
+                # context_variables["sender"] = active_agent.name
 
         return Response(
             messages=history[init_len:],
